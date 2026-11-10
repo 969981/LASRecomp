@@ -578,6 +578,22 @@ def _hookshot_attr(gen, a):
 PATCHES[HOOKSHOT_ATTR_SITE] = _hookshot_attr
 
 
+# Hookshot 8-way aim (runtime/hle/hookshot.c, setting hookshot_8way): Link's hookshot action, on entering its Start state
+# (main+0xdbb760), computes his flat forward vector and stores it here (q0) as the direction it gives the hook
+# (main+0xd82a80, its only caller). The runtime can round q0 to the nearest of 8 directions first.
+HOOKSHOT_DIR_SITE = A.HOOKSHOT_DIR_SITE
+
+
+def _hookshot_dir(gen, a):
+    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    assert w == 0x3d80be60, hex(w)  # str q0, [x19, #0x2f0]
+    return ('{ extern void rt_hookshot_dir(Cpu *); rt_hookshot_dir(c); memcpy((void *)(uintptr_t)(c->x[19] + 0x2f0), &c->v[0], 16); }'
+            f'  /* {a:#x}: str q0, [x19, #0x2f0] (hookshot firing direction) */')
+
+
+PATCHES[HOOKSHOT_DIR_SITE] = _hookshot_dir
+
+
 # 360-degree movement (runtime/hle/qol.c, setting move_360): main+0xded9f0 snaps Link's stick vector (s1 = x, s2 = y)
 # to one of 8 directions and returns it as a 32-bit angle (full turn = 2^32, 0 = down). With the setting on, the
 # runtime returns the stick's own angle instead (as the community "360 Controls" mod does).
@@ -992,7 +1008,18 @@ EFFECT_BONE_SITE = A.EFFECT_BONE_SITE
 # The game code they generate never changes when a hook's behaviour does: only a new site needs the game code
 # rebuilt. New game-code changes go here, as a hook, unless they can't.
 # site -> (the instruction word, (jump targets...), what it's for)
+# Power-up music (powerup_music.c): the pickup starts BGM_NUTS directly. Four music paths independently check
+# Link's sound-disable bit at +0x1b8c; set it only in their local copies so normal music isn't muted or replaced.
+BUFF_MUSIC_PICKUP_SITE = A.BUFF_MUSIC_PICKUP_SITE
+BUFF_MUSIC_FLAGS_SITES = [A.BUFF_MUSIC_FLAGS_SITES_0, A.BUFF_MUSIC_FLAGS_SITES_1,
+                        A.BUFF_MUSIC_FLAGS_SITES_2, A.BUFF_MUSIC_FLAGS_SITES_3]
+
 HOOKS = {
+    BUFF_MUSIC_PICKUP_SITE: (0x97ccd77b, (), 'bl main+0xaf560: Guardian Acorn / Piece of Power music'),
+    BUFF_MUSIC_FLAGS_SITES[0]: (0xb95b8d15, (), 'ldr w21, [x8, #0x1b8c]: music update, power-up sound flag'),
+    BUFF_MUSIC_FLAGS_SITES[1]: (0xb95b8d14, (), 'ldr w20, [x8, #0x1b8c]: zone music, power-up sound flag'),
+    BUFF_MUSIC_FLAGS_SITES[2]: (0xb95b8d15, (), 'ldr w21, [x8, #0x1b8c]: event music, power-up sound flag'),
+    BUFF_MUSIC_FLAGS_SITES[3]: (0xb95b8d15, (), 'ldr w21, [x8, #0x1b8c]: power-up presentation, sound flag'),
     MB_SEEN_SITE: (0xf94002a8, (), 'ldr x8, [x21]: an actor seen - field mini-bosses (miniboss.c)'),
     CRASHOUT_SITE: (0xb900b81f, (A.CRASHOUT_SKIP,), 'str wzr, [x0, #0xb8]: Blaino knock-out, no crash-out on the Field'),
     GOHMA_HEADING_SITES[0]: (0xb915ee68, (), 'str w8, [x19, #0x15ec]: Gohma heading at Link on the Field'),
