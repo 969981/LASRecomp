@@ -1,0 +1,100 @@
+# Keep the mirror current with the upstream stable and active beta branches.
+# GITHUB_TOKEN pushes do not trigger push workflows: dispatch builds explicitly.
+name: Sync upstream and publish
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/sync-upstream.yml'
+  schedule:
+    - cron: '47 */4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: lasrecomp-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        upstream_branch: [main, beta_6]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BRANCH: ${{ matrix.upstream_branch }}
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Merge corresponding upstream branch
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream https://github.com/peiikai/LASRecomp.git
+          git fetch --no-tags upstream "$BRANCH"
+          upstream_sha=$(git rev-parse "refs/remotes/upstream/$BRANCH")
+          echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+          git fetch --no-tags origin "refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+          git switch -C "$BRANCH" "refs/remotes/origin/$BRANCH"
+          if git merge-base --is-ancestor "$upstream_sha" HEAD; then
+            echo "No new upstream commits for $BRANCH"
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            before=$(git rev-parse HEAD)
+            git merge --no-ff --no-commit "refs/remotes/upstream/$BRANCH"
+            # GITHUB_TOKEN cannot push upstream changes to GitHub Actions files.
+            # Preserve the mirror's existing workflows, and fail on source conflicts.
+            git restore --source="$before" --staged --worktree -- .github/workflows
+            git commit -m "chore(sync): merge upstream/$BRANCH $upstream_sha"
+            git diff --quiet "$before" HEAD -- .github/workflows || {
+              echo "::error::Unexpected changes to mirror workflows"; exit 1;
+            }
+            git push origin "HEAD:refs/heads/$BRANCH"
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+          echo "build_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch mirror prerelease when upstream changed
+        if: steps.source.outputs.changed == 'true' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && matrix.upstream_branch == 'beta_6')
+        shell: bash
+        run: |
+          set -euo pipefail
+          upstream_sha='${{ steps.source.outputs.upstream_sha }}'
+          build_sha='${{ steps.source.outputs.build_sha }}'
+          short=$(printf '%s' "$upstream_sha" | cut -c1-12)
+          tag="ci-test-sync-$BRANCH-$short"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Already released $tag, skipping duplicate build"
+            exit 0
+          fi
+          # Pin the exact merged commit so a moving branch cannot change a build.
+          gh workflow run release.yml --ref main -f tag="$tag" -f ref="$build_sha" -f mirror_snapshot=true
+          echo "Requested Release build for $tag at $build_sha"
+
+      - name: Summary
+        if: always() && steps.source.outcome == 'success'
+        shell: bash
+        run: |
+          {
+            echo "## Upstream $BRANCH"
+            echo "- Upstream commit: ${{ steps.source.outputs.upstream_sha }}"
+            echo "- New commits merged: ${{ steps.source.outputs.changed }}"
+            echo "- Mirror commit: ${{ steps.source.outputs.build_sha }}"
+            echo "- Release: see Actions > Release"
+          } >> "$GITHUB_STEP_SUMMARY"
