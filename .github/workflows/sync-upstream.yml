@@ -57,10 +57,15 @@ jobs:
             echo 'changed=false' >> "$GITHUB_OUTPUT"
           else
             before=$(git rev-parse HEAD)
-            git merge --no-ff --no-commit "refs/remotes/upstream/$BRANCH"
-            # GITHUB_TOKEN cannot push upstream changes to GitHub Actions files.
-            # Preserve the mirror's existing workflows, and fail on source conflicts.
+            git merge --no-ff --no-commit "refs/remotes/upstream/$BRANCH" || true
+            # Restore this branch's workflow tree even if upstream conflicted.
+            # Refuse any unresolved non-workflow conflict, never force-push.
             git restore --source="$before" --staged --worktree -- .github/workflows
+            if [[ -n "$(git ls-files -u)" ]]; then
+              echo "::error::Unresolved source conflicts on $BRANCH."
+              git ls-files -u
+              exit 1
+            fi
             git commit -m "chore(sync): merge upstream/$BRANCH $upstream_sha"
             git diff --quiet "$before" HEAD -- .github/workflows || {
               echo "::error::Unexpected changes to mirror workflows"; exit 1;
