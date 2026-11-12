@@ -293,6 +293,22 @@ def _items_page(gen, a):
 PATCHES[ITEMS_PAGE_SITE] = _items_page
 
 
+# Touch controls (runtime/ui/mobile/touch_controls.mm): main+0xee6f80 is the pause menu's update, once per frame on
+# every page and between them (the Items / Map / System pages' own updates are called from it; found by profiling
+# the System and Map pages against play). Its prologue reports that the pause menu is up.
+PAUSE_MENU_SITE = A.PAUSE_MENU_SITE
+
+
+def _pause_menu(gen, a):
+    w = struct.unpack_from('<I', gen.nso.image, a - gen.base)[0]
+    assert w == 0xd10383ff, hex(w)  # sub sp, sp, #0xe0
+    return ('{ extern void rt_pause_menu_tick(void); rt_pause_menu_tick(); c->sp -= 0xe0; }'
+            f'  /* {a:#x}: sub sp, sp, #0xe0 (pause menu shown) */')
+
+
+PATCHES[PAUSE_MENU_SITE] = _pause_menu
+
+
 # The Items page's cursor move: main+0xeb7fdc loads the cell the pressed direction leads to (the page's neighbour
 # table; 0x27 none). A tap on a cell (touch screens) asks for that cell there, so one press moves the cursor straight to
 # it through the game's own move (the old cell let go, the new one picked, its sound): rt_items_nav_pick.
@@ -1038,6 +1054,16 @@ SHAPE_SIM_SITES = [A.SHAPE_SIM_SITES_0, A.SHAPE_SIM_SITES_1]
 # so the effect plays where the item is.
 EFFECT_BONE_SITE = A.EFFECT_BONE_SITE
 
+# Text speed (issue #681, runtime/hle/text_speed.c). A message pane's text shows by playing a layout animation: its
+# frame is how much of the text is drawn. Each window opening (main+0xf53c80) sets the pane's step to 2 (pane+0x284;
+# times pane+0x280, frames per character unit). The pane's update (main+0xf534e0, every message layout's) plays the
+# animation at that step while its frame is short of the page's end and sets the frame to the end once it is there.
+# B mid-page sets the frame to the end too (main+0xf53b60). Fast scales the step; Instant takes the "at the end"
+# branch at once. The window's states (Reading, KeyWaiting, Selecting, TimerWaiting) still wait for the button or
+# timer as before.
+TEXT_RATE_SITE = A.TEXT_RATE_SITE  # str w8, [x0, #0x284]
+TEXT_SNAP_SITE = A.TEXT_SNAP_SITE  # b.lt: the frame is short of the page's end
+
 # ---- hook sites: the instruction stays as it is; just before it the runtime's rt_hook (runtime/hle/hooks.c) is asked
 # what to do - 0 run it, 1 the hook did it all, 2.. jump to the site's first.. target (each a label in its function).
 # The game code they generate never changes when a hook's behaviour does: only a new site needs the game code
@@ -1080,4 +1106,6 @@ HOOKS = {
     SHAPE_SIM_SITES[0]: (0xaa0003f4, (A.SHAPE_SIM_SKIP_0,), 'mov x20, x0: a PhysX shape change, no update without its simulation object (#314)'),
     SHAPE_SIM_SITES[1]: (0xaa0003e1, (A.SHAPE_SIM_SKIP_1,), 'mov x1, x0: a PhysX shape change, no update without its simulation object (#314)'),
     EFFECT_BONE_SITE: (0xf9402ac0, (A.EFFECT_BONE_SKIP,), 'ldr x0, [x22, #0x50]: a bone-following effect without its bone, at the actor instead (#349)'),
+    TEXT_RATE_SITE: (0xb9028408, (), 'str w8, [x0, #0x284]: a message pane\'s text step, set as a window opens (#681)'),
+    TEXT_SNAP_SITE: (0x540002cb, (), 'b.lt: message text short of the page\'s end, Instant shows it all (#681)'),
 }
