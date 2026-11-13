@@ -48,15 +48,22 @@ These are the minimums during the beta and may change as development continues.
 | Storage | About 15 GB free |
 
 > [!TIP]
-> On low-end devices around this level, we recommend setting Internal resolution to Dynamic, Minimum resolution to 360p and
-> Internal FPS target to 30.
+> On lower-end devices, or to run cooler and save battery, we recommend setting Internal resolution to Dynamic and
+> Internal FPS target to 30. If a low-end device still can't hold 30 FPS, setting Minimum resolution to 360p can help
+> further, at the cost of a lot of visual quality.
 
 **iPhone and iPad:**
 
 | | Minimum |
 |---|---|
 | OS | iOS or iPadOS 16 or newer |
-| Device | 8 GB of RAM: iPhone 15 Pro or newer, or an iPad with an M1 chip or newer |
+| Device | iPhone 15 Pro or newer<br>iPad Pro (2021) or newer<br>iPad Air (2022) or newer<br>iPad mini (2024) or newer |
+| Storage | About 15 GB free |
+
+> [!TIP]
+> On lower-end devices, or to run cooler and save battery, we recommend setting Internal resolution to Dynamic and
+> Internal FPS target to 30. If a low-end device still can't hold 30 FPS, setting Minimum resolution to 360p can help
+> further, at the cost of a lot of visual quality.
 
 ![Mabe Village in a 21:9 window: the unlocked aspect ratio shows more of the island](docs/ultrawide.jpg)
 
@@ -255,7 +262,7 @@ without touching the installed game, your game files or your saves.
   each attached log counted once (#589), the game files check in the log bot's summary (#600), summaries for
   logs attached by editing a comment (#601), a Linux AppImage build that stops when its container fails (#653), and
   a zig download that starts over after being cut off (#667)
-- **[@ky1vstar](https://github.com/ky1vstar)** - a much faster Linux ARM release build (#319), touch menus and on-screen controls for phones (#634), the frame interpolation presenter on CADisplayLink (#649), one shared macOS and iOS host layer (#685), the iOS cleanup after #238 (#697), iOS fixes for saves, errors and Files (#690), and a safer, simpler iOS kit export (#704)
+- **[@ky1vstar](https://github.com/ky1vstar)** - a much faster Linux ARM release build (#319), touch menus and on-screen controls for phones (#634), the frame interpolation presenter on CADisplayLink (#649), one shared macOS and iOS host layer (#685), the iOS cleanup after #238 (#697), iOS fixes for saves, errors and Files (#690), a safer, simpler iOS kit export (#704), and seed generation on iOS that shows its progress and handles room shuffle re-runs (#735)
 - **[@theb0rg](https://github.com/theb0rg)** - the fix for AMD integrated graphics on Windows (#335)
 - **[@gtf-dot](https://github.com/gtf-dot)** - the game-text font on Linux (#330)
 - **[@cfcosta](https://github.com/cfcosta)** - full speed on Linux AMD handhelds like the Steam Deck and ROG Ally (#392)
