@@ -9,6 +9,7 @@
 #include "../game_addresses.h"
 #include "../rt.h"
 #include "../settings.h"
+#include "hud_stats.h"
 #include "pace.h"
 #include "slowframe.h"
 
@@ -57,6 +58,11 @@
 //   spawned, a render scale change; or a frame over 100 ms) frames are left out of the count, late or busy;
 // - the frames over must be spread through the window (some in each quarter of it: 15 frames, 1/4 s at 60), not
 //   bunched as after a hitch nothing signalled.
+// Dynamic resolution's hold (output_scale.c) and this one meet: Dynamic held at 30 raises its factor while 30 fits, and a
+// GPU at half load clocks down (Turnip on a Retroid Pocket 5: G + W 17 ms at 360p held, 7 ms at 540p at 60), so the GPU
+// time above never comes under 13 ms - the way back was Dynamic's look for 60 at its floor, which only lowered the
+// resolution and left the game in its 30 fps mode: it failed every time and waited up to a minute between tries. That
+// look now ends this hold too (pace_try_60), with a hitch's grace; frames that don't fit hold again as on a first try.
 // A user setting that changes the GPU's load (the resolution, the upscaler, anti-aliasing: pace_settings_changed) starts
 // the hold and the backoff over: they were learned under the old load (after 4x, where 60 was out of reach, a lower
 // resolution stayed at 30 outdoors, backing off: 10 ms GPU limit, up to 16x the wait). The hold ends and 60 gets a
@@ -79,21 +85,23 @@ static uint64_t stat_pace_over;
 // (game manager +0x4e2, normally 0) is 1 while slow, the game's own value again after. Re-asserted every frame while held.
 // Returns whether the game is held (not when it allows no 30 fps mode itself: its most, +0x4e3, is 0).
 #define FW_MIN_EXTRA_VSYNCS 0x4e2  // (+0x4e3: the most, 1 - its 30 fps mode; +0x4e0 / +0x4e1: the current choice)
-// Internal FPS target (Video settings): 30 keeps the game in its 30 fps mode, and "30 outdoors, 60 indoors" does it in
-// the overworld (the level Field: Mabe Village, the beaches, the forest...) and not in houses, caves and dungeons. 60
-// is the pacer's own choice as before. Dynamic resolution follows the same target (output_scale.c dyn_update).
+// FPS target (Video settings, Dynamic resolution's: settings_fps_target): 30 keeps the game in its 30 fps mode, and
+// "30 outdoors, 60 indoors" does it in the overworld (the level Field: Mabe Village, the beaches, the forest...) and
+// not in houses, caves and dungeons. 60 is the pacer's own choice as before. Dynamic resolution follows the same
+// target (output_scale.c dyn_update).
 bool pace_target_30(void) {
 #ifdef PACE_TEST
     return false;
 #else
     extern const char *game_level_name(void);  // hle/widescreen.c
-    return g_settings.fps_target == FPS_TARGET_30 || (g_settings.fps_target == FPS_TARGET_MIXED && !strcmp(game_level_name(), "Field"));
+    int t = settings_fps_target();
+    return t == FPS_TARGET_30 || (t == FPS_TARGET_MIXED && !strcmp(game_level_name(), "Field"));
 #endif
 }
 
 static bool hold_30(bool on) {
     static bool held;
-    on = on || pace_target_30();  // (the Internal FPS target: held whatever the pacer measures)
+    on = on || pace_target_30();  // (the FPS target: held whatever the pacer measures)
     static uint8_t saved;
 #ifdef PACE_TEST  // (tools/test_pace.c: a simulated game manager)
     extern uint64_t pace_test_game_mgr;
@@ -160,6 +168,9 @@ void pace_settings_changed(const char *what) {
     __atomic_store_n(&reset_what, what, __ATOMIC_RELEASE);
 }
 
+static int try_60;
+void pace_try_60(void) { __atomic_store_n(&try_60, 1, __ATOMIC_RELEASE); }
+
 bool pace_is_slow(void) { return pace_slow; }
 uint64_t pace_frames_over(void) {
     uint64_t n = stat_pace_over;
@@ -204,6 +215,40 @@ static uint64_t pace_scene(void) {
     return h ? h : 1;
 }
 
+// Show advanced information (hud_stats.h): each game frame's time, and the threads' and the GPU's busy share of it
+static struct {
+    uint64_t frames;
+    double fps, cpu_game, cpu_render, gpu, work;
+    float ms[HUD_FRAMES];
+    int n, at;  // (a ring: the next slot)
+} hud = {.cpu_render = -1, .gpu = -1};
+static void hud_note(uint64_t p, uint64_t tc, uint64_t rc, bool render, double gpu_ms) {
+    if (!p || p > 1000000000ull) return;  // (the first frame, or after a stop: no period)
+    double ms = p / 1e6, k = 0.05;  // (the same ~20-frame average as the GPU time's)
+    hud.frames++;
+    hud.ms[hud.at] = (float)ms, hud.at = (hud.at + 1) % HUD_FRAMES;
+    if (hud.n < HUD_FRAMES) hud.n++;
+    double fps = 1000 / ms, cg = 100.0 * tc / p, cr = 100.0 * rc / p;
+    hud.fps = hud.fps > 0 ? hud.fps + (fps - hud.fps) * k : fps;
+    hud.cpu_game = hud.frames > 1 ? hud.cpu_game + (cg - hud.cpu_game) * k : cg;
+    hud.cpu_render = !render ? -1 : hud.cpu_render >= 0 ? hud.cpu_render + (cr - hud.cpu_render) * k : cr;
+    if (gpu_ms >= 0) {
+        double g = 100 * gpu_ms / ms;
+        hud.gpu = hud.gpu >= 0 ? hud.gpu + (g - hud.gpu) * k : g;
+    }
+    // what the frame took to make, without the wait for the display: the slowest of the three (they run side by side)
+    double work = tc / 1e6;
+    if (render && rc / 1e6 > work) work = rc / 1e6;
+    if (gpu_ms > work) work = gpu_ms;
+    hud.work = hud.frames > 1 ? hud.work + (work - hud.work) * k : work;
+}
+void pace_hud(PaceHud *h) {
+    h->frames = hud.frames, h->fps = hud.fps, h->n = hud.n;
+    for (int i = 0; i < hud.n; i++) h->frame_ms[i] = hud.ms[(hud.at - hud.n + i + HUD_FRAMES) % HUD_FRAMES];
+    h->cpu_game = hud.cpu_game, h->cpu_render = hud.cpu_render, h->gpu = hud.gpu, h->work_ms = hud.work;
+    h->hold30 = pace_is_slow();
+}
+
 // The game's own GPU time per frame (pace_frame's moving average, ms; -1: no GPU timer) - frame interpolation's
 // in-betweens get what is left of a frame (metal.m ip_present)
 static double gpu_avg = -1;
@@ -219,6 +264,7 @@ void pace_frame(void) {
     static int idx, nover, nbusy, calm, clear, backoff = 1;
     static bool late_hold;  // (the hold was started by frames shown late more than by busy ones)
     static uint64_t back_at;  // when frame pacing last went back to 60 (0: not yet)
+    static bool try_back;     // (that was Dynamic's look for 60: a hold right after it keeps the backoff)
     static double avg;  // cost (ms at 60 fps), moving average (~20 frames)
     static uint64_t last_tcpu, last_rcpu;
     extern uint64_t rq_render_cpu_ns(void);  // rqueue.c: the render thread's CPU time so far (0: no render thread)
@@ -246,6 +292,15 @@ void pace_frame(void) {
         memset(over, 0, sizeof over);
         memset(recent, 0, sizeof recent);
     }
+    if (__atomic_exchange_n(&try_60, 0, __ATOMIC_ACQ_REL) && on && pace_slow) {  // (see above)
+        LOG("[pace] dynamic resolution looks for 60 at its floor: trying 60\n");
+        pace_slow = late_hold = false, back_at = now, try_back = true;
+        clear = calm = cpu_clear = 0, gpu_said = 0;
+        nover = nbusy = 0;
+        memset(over, 0, sizeof over);
+        memset(recent, 0, sizeof recent);
+        pace_hitch("a try at 60");
+    }
     if (first || p > 100000000ull) {  // (loading, a hitch: not a pace, and maybe a new scene)
         clear = calm = cpu_clear = 0, scene = 0;
         if (!first) {
@@ -270,6 +325,7 @@ void pace_frame(void) {
     if (pace_slow && rc / 1e6 > cost && rc < 60000000ull) cost = rc / 1e6;
     avg = avg ? avg + (cost - avg) * 0.05 : cost;
     if (gpu_ms >= 0) gpu_avg = gpu_avg >= 0 ? gpu_avg + ((gpu_ms < 100 ? gpu_ms : 100) - gpu_avg) * 0.05 : gpu_ms;
+    if (!first) hud_note(p, tc, rc, rcpu != 0, gpu_ms);
     static int log = -1;  // LARECOMP_LOG_PACE=1: each frame's period, vsync wait and busy time
     if (log < 0) log = getenv("LARECOMP_LOG_PACE") != NULL;
     extern __thread uint64_t g_rq_wait_ns;  // rqueue.c: waits for the render thread (translation), counted as busy
@@ -345,7 +401,8 @@ void pace_frame(void) {
     if (!pace_slow && nover >= 12 && med >= 13.0f && quarters == 4) {
         pace_slow = true, calm = clear = cpu_clear = 0, gpu_said = 0;
         late_hold = nbusy < 12;
-        if (back_at && now - back_at < 20000000000ull && backoff < 16) backoff *= 2;  // (flickering: wait longer)
+        if (back_at && now - back_at < 20000000000ull && backoff < 16 && !try_back) backoff *= 2;  // (flickering: wait longer)
+        try_back = false;
         LOG("[pace] frames don't fit 60 fps (%d of the last 60 over 16.2 ms busy or shown late, %d by busy time, median %.1f): "
             "holding the game's 30 fps mode%s\n", nover, nbusy, med, backoff > 1 ? " (backing off)" : "");
     } else if (pace_slow) {
@@ -371,7 +428,7 @@ void pace_frame(void) {
             LOG("[pace] %d frames with %s headroom on gameplay frames (%.1f ms a frame at 60 on average, median %.1f, at most "
                 "%.1f%s): back to the game's own choice\n", clear >= clear_n ? clear : calm, clear >= clear_n ? "clear" : "enough",
                 avg, med, peak, g);
-            pace_slow = false, nover = nbusy = 0, back_at = now;
+            pace_slow = false, nover = nbusy = 0, back_at = now, try_back = false;
             memset(over, 0, sizeof over);
             memset(recent, 0, sizeof recent);
         }
