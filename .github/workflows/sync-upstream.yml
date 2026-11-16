@@ -47,8 +47,15 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git remote add upstream https://github.com/peiikai/LASRecomp.git
-          git fetch --no-tags upstream "$BRANCH"
+          # Upstream retired beta_6 after merging it into release/0.6.
+          # Preserve our beta_6 mirror branch and merge its supported successor.
+          source_branch="$BRANCH"
+          if [[ "$BRANCH" == "beta_6" ]]; then
+            source_branch="release/0.6"
+          fi
+          git fetch --no-tags upstream "refs/heads/$source_branch:refs/remotes/upstream/$BRANCH"
           upstream_sha=$(git rev-parse "refs/remotes/upstream/$BRANCH")
+          echo "source_branch=$source_branch" >> "$GITHUB_OUTPUT"
           echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
           git fetch --no-tags origin "refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
           git switch -C "$BRANCH" "refs/remotes/origin/$BRANCH"
